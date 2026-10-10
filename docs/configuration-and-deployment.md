@@ -141,7 +141,7 @@ the transport, HTTP bind/auth/origin values, and all OAuth settings shown here.
 | `AFFINE_MCP_HTTP_HOST` | No | `127.0.0.1` | Use `0.0.0.0` in containers; non-loopback bearer listeners require authentication |
 | `AFFINE_MCP_HTTP_ALLOWED_ORIGINS` | No | none | Comma-separated list for browser clients |
 | `AFFINE_MCP_HTTP_ALLOW_ALL_ORIGINS` | No | `false` | Testing only; rejected in OAuth mode |
-| `AFFINE_MCP_HTTP_TOKEN` | Required for non-loopback bearer mode | none | Shared bearer token for `/mcp`, `/sse`, and `/messages` |
+| `AFFINE_MCP_HTTP_TOKEN` | Required for non-loopback bearer mode unless identities are configured | none | Shared bearer token for `/mcp`, `/sse`, and `/messages` |
 | `AFFINE_MCP_PUBLIC_BASE_URL` | Required in OAuth mode | none | Public base URL for this MCP server |
 | `AFFINE_OAUTH_ISSUER_URL` | Required in OAuth mode | none | OAuth issuer discovery URL |
 | `AFFINE_OAUTH_SCOPES` | No | `mcp` | Scopes advertised for OAuth-protected access |
@@ -156,6 +156,8 @@ from the saved config file:
 | --- | --- | --- | --- |
 | `AFFINE_MCP_HTTP_PROXY_URL` | No | `http://127.0.0.1:${PORT:-3000}/mcp` | Loopback Streamable HTTP endpoint used by `affine-mcp-http-proxy` |
 | `AFFINE_MCP_HTTP_PROXY_TIMEOUT_MS` | No | `60000` | Complete proxy response deadline, including its body; integer from `100` to `300000` |
+| `AFFINE_MCP_IDENTITIES` | No | none | Inline JSON of per-caller bearer identities; see [Per-caller identities](#per-caller-identities) |
+| `AFFINE_MCP_IDENTITIES_FILE` | No | none | Path to a JSON file with the same shape; mutually exclusive with `AFFINE_MCP_IDENTITIES` |
 | `AFFINE_MCP_HTTP_ALLOW_UNAUTHENTICATED` | No | `false` | Unsafe opt-in for an unauthenticated non-loopback bearer listener |
 | `AFFINE_MCP_HTTP_ALLOW_QUERY_TOKEN` | No | `false` | Deprecated compatibility mode for `?token=` clients; prefer the `Authorization` header |
 | `AFFINE_MCP_HTTP_BODY_LIMIT` | No | `4mb` | Maximum JSON request body size; accepts bytes, `kb`, or `mb` from `1kb` through `64mb` |
@@ -374,11 +376,58 @@ browser history, and monitoring systems. Legacy clients can temporarily opt in
 with `AFFINE_MCP_HTTP_ALLOW_QUERY_TOKEN=true`, but this mode is deprecated.
 
 In bearer mode, a non-loopback listener such as `0.0.0.0`, `::`, a LAN address,
-or a hostname requires `AFFINE_MCP_HTTP_TOKEN`. Startup fails when the token is
-missing. `AFFINE_MCP_HTTP_ALLOW_UNAUTHENTICATED=true` is an explicit unsafe
+or a hostname requires `AFFINE_MCP_HTTP_TOKEN` or at least one identity from
+`AFFINE_MCP_IDENTITIES`. Startup fails when both are missing. `AFFINE_MCP_HTTP_ALLOW_UNAUTHENTICATED=true` is an explicit unsafe
 escape hatch for isolated private networks and must not be used on an
 internet-reachable listener. Loopback listeners remain available without MCP
 authentication for local development.
+
+### Per-caller identities
+
+A single shared token means every caller acts as the same AFFiNE account.
+Identities give each caller their own bearer token mapped to their own AFFiNE
+credentials, so pages, comments, and history in AFFiNE are attributed to the
+person whose client made the call, and one leaked token can be revoked without
+rotating everyone else's.
+
+```bash
+export MCP_TRANSPORT=http
+export AFFINE_MCP_AUTH_MODE=bearer
+export AFFINE_MCP_HTTP_HOST="0.0.0.0"
+export AFFINE_MCP_IDENTITIES_FILE=/run/secrets/affine-mcp-identities.json
+```
+
+```json
+[
+  { "name": "alice", "token": "<random, 32+ chars>", "email": "alice@example.com", "password": "..." },
+  { "name": "bob",   "token": "<random, 32+ chars>", "apiToken": "<AFFiNE bearer token>", "workspaceId": "..." }
+]
+```
+
+An object keyed by identity name is accepted as well. Each identity needs:
+
+- `name`: 1-64 characters of letters, digits, `.`, `_`, `-`; unique, case-insensitive
+- `token`: the HTTP bearer token the caller sends; at least 16 characters, unique
+- AFFiNE credentials: `email` + `password`, `apiToken`, or `cookie`
+- optional `workspaceId` overriding `AFFINE_WORKSPACE_ID` for that caller
+
+Behavior:
+
+- `AFFINE_MCP_HTTP_TOKEN` stays optional. When set, it still authenticates as
+  the shared service identity configured through `AFFINE_EMAIL` and friends.
+- Each identity signs in to AFFiNE lazily on its first MCP session and renews
+  its own session independently.
+- An MCP session is bound to the identity that opened it; a request that
+  presents a different token for the same session id is rejected with `403`.
+- `sign_in` is not registered for identity sessions, so a caller cannot switch
+  the session to another AFFiNE account.
+- Startup logs and `/healthz` show identity names and counts only; tokens and
+  passwords are never logged.
+- Identities require `AFFINE_MCP_AUTH_MODE=bearer`; OAuth mode keeps its own
+  caller model.
+
+Generate tokens with `openssl rand -hex 32`. Keep the identities file outside
+version control with mode `0600`, or mount it as a container secret.
 
 ### OAuth mode
 

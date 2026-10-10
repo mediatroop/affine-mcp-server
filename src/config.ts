@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { createRequire } from "module";
+import { type HttpIdentity, loadHttpIdentities } from "./httpIdentities.js";
 
 import {
   isRemotePlainHttpUrl,
@@ -39,6 +40,8 @@ export type HttpServerConfig = {
   authToken?: string;
   allowedOrigins: string[];
   allowAllOrigins: boolean;
+  /** Per-caller bearer identities (AFFINE_MCP_IDENTITIES / AFFINE_MCP_IDENTITIES_FILE). */
+  identities: HttpIdentity[];
 };
 
 export type ServerConfig = {
@@ -431,7 +434,11 @@ export function loadConfig(): ServerConfig {
       env("AFFINE_MCP_HTTP_ALLOW_ALL_ORIGINS", file, "false"),
       false,
     ),
+    identities: loadHttpIdentities(),
   };
+  if (http.identities.length > 0 && authMode !== "bearer") {
+    throw new Error("AFFINE_MCP_IDENTITIES requires AFFINE_MCP_AUTH_MODE=bearer.");
+  }
   const oauthAllowServiceWrites = parseBooleanEnv(
     "AFFINE_OAUTH_ALLOW_SERVICE_WRITES",
     env("AFFINE_OAUTH_ALLOW_SERVICE_WRITES", file),

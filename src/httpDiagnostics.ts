@@ -57,7 +57,8 @@ export function registerHttpDiagnosticsRoutes(
     res.json({
       status: "ok",
       authMode: config.authMode,
-      protected: config.authMode === "oauth" || Boolean(authState.httpAuthToken),
+      protected: config.authMode === "oauth" || Boolean(authState.httpAuthToken) || authState.identities.length > 0,
+      identities: authState.identities.length,
     });
   });
 

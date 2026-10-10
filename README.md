@@ -329,7 +329,8 @@ For common failures, see:
 - Use a dedicated least-privilege AFFiNE account for unattended deployments
 - Email/password HTTP sessions share one login and never fall back to anonymous backend requests after authentication failure
 - Use HTTPS for non-local deployments
-- Keep remote HTTP MCP listeners authenticated; bearer mode refuses a non-loopback bind without `AFFINE_MCP_HTTP_TOKEN`
+- Keep remote HTTP MCP listeners authenticated; bearer mode refuses a non-loopback bind without `AFFINE_MCP_HTTP_TOKEN` or `AFFINE_MCP_IDENTITIES`
+- Give each person their own bearer token and AFFiNE account with [per-caller identities](docs/configuration-and-deployment.md#per-caller-identities) instead of sharing one token
 - Send MCP bearer tokens in the `Authorization` header, never in the URL
 - Re-run `affine-mcp login` when a saved browser session expires
 - For GUI clients, verify `command -v affine-mcp` and `command -v node`; an absolute

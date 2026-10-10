@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-caller HTTP identities: `AFFINE_MCP_IDENTITIES` / `AFFINE_MCP_IDENTITIES_FILE` map individual bearer tokens to individual AFFiNE credentials. Each MCP session runs under the AFFiNE account of the token that opened it, sessions cannot be reused with another identity's token, and `sign_in` is withheld from identity sessions. `AFFINE_MCP_HTTP_TOKEN` remains the shared service identity and is no longer required for non-loopback bearer listeners when identities are configured.
+
 ## [3.9.0] - 2026-10-06
 
 ### Added

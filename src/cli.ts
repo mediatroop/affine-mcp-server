@@ -1561,7 +1561,9 @@ async function doctor(args: string[]) {
 
   if (effective.transportMode === "http") {
     const loopbackHost = ["localhost", "127.0.0.1", "::1"].includes(effective.http.host);
-    const protectedHttp = effective.authMode === "oauth" || Boolean(effective.http.authToken);
+    const protectedHttp = effective.authMode === "oauth"
+      || Boolean(effective.http.authToken)
+      || effective.http.identities.length > 0;
     checks.push({
       name: "http-exposure",
       ok: loopbackHost || protectedHttp,
@@ -1569,7 +1571,7 @@ async function doctor(args: string[]) {
         ? `Loopback bind on ${effective.http.host}:${effective.http.port}`
         : protectedHttp
           ? `Protected bind on ${effective.http.host}:${effective.http.port}`
-          : "Non-loopback bearer deployments require AFFINE_MCP_HTTP_TOKEN",
+          : "Non-loopback bearer deployments require AFFINE_MCP_HTTP_TOKEN or AFFINE_MCP_IDENTITIES",
     });
   }
 

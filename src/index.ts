@@ -103,6 +103,35 @@ if (config.authMode === "oauth" && !authSession.hasConfiguredAuth) {
   );
 }
 
+// Per-caller identities: each gets its own AuthSession so every tool call runs
+// under that caller's AFFiNE account. Sessions are created eagerly so a broken
+// entry fails at startup, but sign-in happens lazily on first use.
+type IdentityRuntime = { auth: AuthSession; workspaceId?: string };
+const identityRuntimes = new Map<string, IdentityRuntime>();
+for (const identity of config.http.identities) {
+  const immediate = identity.apiToken || identity.cookie;
+  const auth = new AuthSession({
+    baseUrl: config.baseUrl,
+    bearer: identity.apiToken,
+    cookie: identity.cookie,
+    email: immediate ? undefined : identity.email,
+    password: immediate ? undefined : identity.password,
+    headers: configuredAuth.headers,
+  });
+  identityRuntimes.set(identity.name, { auth, workspaceId: identity.workspaceId });
+  identity.password = undefined;
+  identity.apiToken = undefined;
+  identity.cookie = undefined;
+}
+
+function resolveIdentityRuntime(name?: string): IdentityRuntime {
+  if (!name) return { auth: authSession, workspaceId: config.defaultWorkspaceId };
+  const runtime = identityRuntimes.get(name);
+  if (!runtime) throw new Error(`Unknown HTTP identity: ${name}`);
+  if (runtime.auth.requiresLogin) runtime.auth.start();
+  return { auth: runtime.auth, workspaceId: runtime.workspaceId ?? config.defaultWorkspaceId };
+}
+
 // The process-scoped AuthSession owns credentials after configuration is loaded.
 config.email = undefined;
 config.password = undefined;
@@ -116,7 +145,10 @@ console.error(`[affine-mcp] Config: ${CONFIG_FILE} (${existsSync(CONFIG_FILE) ? 
 console.error(`[affine-mcp] Endpoint: ${config.graphqlEndpoint}`);
 const authSource = authSession.hasConfiguredAuth ? authSession.source : "not configured";
 console.error(`[affine-mcp] Auth: ${authSource}`);
-if (authSource === "not configured") {
+if (identityRuntimes.size > 0) {
+  console.error(`[affine-mcp] Identities: ${[...identityRuntimes.keys()].join(", ")}`);
+}
+if (authSource === "not configured" && identityRuntimes.size === 0) {
   console.error("[affine-mcp] WARNING: No authentication configured. Some operations may fail.");
   console.error("[affine-mcp] Set AFFINE_EMAIL and AFFINE_PASSWORD, AFFINE_COOKIE, or run: affine-mcp login");
 }
@@ -140,16 +172,17 @@ if (
   );
 }
 
-async function buildServer() {
+async function buildServer(identityName?: string) {
   const server = new McpServer({ name: "affine-mcp", version: VERSION });
   const gqlHeaders = { ...(config.headers || {}) };
+  const { auth, workspaceId } = resolveIdentityRuntime(identityName);
 
   // Initialize GraphQL client with authentication
   const gql = new GraphQLClient({
     endpoint: config.graphqlEndpoint,
     baseUrl: config.baseUrl,
     headers: gqlHeaders,
-    authProvider: () => authSession.ready(),
+    authProvider: () => auth.ready(),
   });
 
 
@@ -164,7 +197,7 @@ async function buildServer() {
       if (!toolFilter.isEnabled(name)) return;
       const outputSchema = options?.outputSchema ?? toolOutputSchemaFor(name);
       const coordinated = coordinateTool(name, options?.inputSchema || {}, handler, {
-        gql, endpoint: config.graphqlEndpoint, workspaceId: config.defaultWorkspaceId,
+        gql, endpoint: config.graphqlEndpoint, workspaceId,
       });
       return originalRegisterTool(name, {
         ...options,
@@ -188,17 +221,19 @@ async function buildServer() {
 
   registerWorkspaceTools(server, gql);
   registerDocTools(server, gql, {
-    workspaceId: config.defaultWorkspaceId,
+    workspaceId: workspaceId,
     toolSurface: { profile: toolFilter.profile, enabledTools: toolFilter.enabledTools },
   });
-  registerCommentTools(server, gql, { workspaceId: config.defaultWorkspaceId });
-  registerHistoryTools(server, gql, { workspaceId: config.defaultWorkspaceId });
-  registerOrganizeTools(server, gql, { workspaceId: config.defaultWorkspaceId });
-  registerPropertyTools(server, gql, { workspaceId: config.defaultWorkspaceId });
-  registerIconTools(server, gql, { workspaceId: config.defaultWorkspaceId });
+  registerCommentTools(server, gql, { workspaceId: workspaceId });
+  registerHistoryTools(server, gql, { workspaceId: workspaceId });
+  registerOrganizeTools(server, gql, { workspaceId: workspaceId });
+  registerPropertyTools(server, gql, { workspaceId: workspaceId });
+  registerIconTools(server, gql, { workspaceId: workspaceId });
   registerUserTools(server, gql);
   registerUserCRUDTools(server, gql);
-  if (config.authMode !== "oauth") {
+  // sign_in would swap the GraphQL client's cookie for a different account;
+  // identity sessions must stay bound to the account their token selected.
+  if (config.authMode !== "oauth" && !identityName) {
     registerAuthTools(server, gql, config.baseUrl);
   }
   registerBlobTools(server, gql);

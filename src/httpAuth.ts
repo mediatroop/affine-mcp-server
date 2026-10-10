@@ -4,6 +4,7 @@ import type express from "express";
 import type { NextFunction, Request, Response } from "express";
 
 import type { ServerConfig } from "./config.js";
+import { type HttpIdentity, matchHttpIdentity } from "./httpIdentities.js";
 import type { OAuthConfig } from "./oauth.js";
 import {
   buildOAuthProtectedResourceMetadata,
@@ -16,6 +17,7 @@ import {
 export type HttpAuthState = {
   authMiddleware: (req: Request, res: Response, next: NextFunction) => void;
   httpAuthToken?: string;
+  identities: readonly HttpIdentity[];
   oauthConfig: OAuthConfig | null;
   protectedResourceMetadataUrl: string | null;
   protectedResourceMetadataPaths: string[];
@@ -64,8 +66,10 @@ export function createHttpAuthState(
     allowAnyOrigin: boolean;
     allowQueryToken?: boolean;
     httpAuthToken?: string;
+    identities?: readonly HttpIdentity[];
   },
 ): HttpAuthState {
+  const identities = opts.identities ?? [];
   let oauthConfig: OAuthConfig | null = null;
   let protectedResourceMetadataUrl: string | null = null;
   let protectedResourceMetadataPaths: string[] = [];
@@ -153,7 +157,7 @@ export function createHttpAuthState(
     }
 
     const httpAuthToken = opts.httpAuthToken;
-    if (!httpAuthToken) return next();
+    if (!httpAuthToken && identities.length === 0) return next();
 
     const authHeader = req.headers.authorization;
     const hasQueryToken = req.query.token !== undefined;
@@ -194,7 +198,21 @@ export function createHttpAuthState(
       token = queryToken;
     }
 
-    if (!token || !tokenMatches(token, httpAuthToken)) {
+    if (!token) {
+      res.status(401).send("Unauthorized: Invalid or missing token");
+      return;
+    }
+
+    // Identity tokens are checked first; the shared token (when configured)
+    // remains the anonymous service identity. Both comparisons always run so
+    // timing does not reveal which branch rejected the caller.
+    const identity = matchHttpIdentity(token, identities);
+    const sharedMatch = Boolean(httpAuthToken) && tokenMatches(token, httpAuthToken!);
+    if (identity) {
+      res.locals.identity = identity.name;
+    } else if (sharedMatch) {
+      res.locals.identity = undefined;
+    } else {
       res.status(401).send("Unauthorized: Invalid or missing token");
       return;
     }
@@ -204,6 +222,7 @@ export function createHttpAuthState(
   return {
     authMiddleware,
     httpAuthToken: opts.httpAuthToken,
+    identities,
     oauthConfig,
     protectedResourceMetadataUrl,
     protectedResourceMetadataPaths,

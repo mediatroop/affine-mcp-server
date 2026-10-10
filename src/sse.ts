@@ -24,6 +24,8 @@ type HttpTransport = StreamableHTTPServerTransport | SSEServerTransport;
 
 type TrackedSession = {
   activeRequests: number;
+  /** Bearer identity that opened the session; undefined for the shared token. */
+  identity?: string;
   kind: "streamable" | "legacy-sse";
   lastActivityAt: number;
   transport: HttpTransport;
@@ -84,11 +86,13 @@ function closeHttpServer(server: HttpServer): Promise<void> {
 }
 
 export async function startHttpMcpServer(
-  createMcpServer: () => Promise<McpServer>,
+  createMcpServer: (identity?: string) => Promise<McpServer>,
   config: ServerConfig,
 ): Promise<HttpMcpServerHandle> {
   const runtimeConfig: HttpRuntimeConfig = loadHttpRuntimeConfig();
   const { host, port, authToken: httpAuthToken, allowedOrigins, allowAllOrigins } = config.http;
+  const identities = config.http.identities ?? [];
+  const hasBearerAuth = Boolean(httpAuthToken) || identities.length > 0;
 
   // --- Bearer Token guard (AFFINE_MCP_HTTP_TOKEN) ---
   // When set, all requests to /mcp, /sse and /messages must include:
@@ -118,16 +122,16 @@ export async function startHttpMcpServer(
   if (
     config.authMode === "bearer" &&
     remoteBind &&
-    !httpAuthToken &&
+    !hasBearerAuth &&
     !allowUnauthenticated
   ) {
     throw new Error(
       `Refusing to bind the HTTP MCP server to non-loopback host "${host}" without authentication. ` +
-        "Set AFFINE_MCP_HTTP_TOKEN, use OAuth, or explicitly set " +
+        "Set AFFINE_MCP_HTTP_TOKEN or AFFINE_MCP_IDENTITIES, use OAuth, or explicitly set " +
         "AFFINE_MCP_HTTP_ALLOW_UNAUTHENTICATED=true only for a trusted private network.",
     );
   }
-  if (config.authMode === "bearer" && remoteBind && !httpAuthToken) {
+  if (config.authMode === "bearer" && remoteBind && !hasBearerAuth) {
     console.warn(
       `[affine-mcp] WARNING: HTTP MCP server is bound to non-loopback host "${host}" without authentication ` +
         "because AFFINE_MCP_HTTP_ALLOW_UNAUTHENTICATED=true. Do not expose this listener to an untrusted network.",
@@ -227,7 +231,24 @@ export async function startHttpMcpServer(
     allowAnyOrigin: allowAllOrigins,
     allowQueryToken,
     httpAuthToken,
+    identities,
   });
+  if (identities.length > 0) {
+    console.error(`[affine-mcp] HTTP identities: ${identities.length} (${identities.map((i) => i.name).join(", ")})`);
+  }
+
+  // A session is bound to the identity that opened it. Reusing a session id
+  // with a different token must not let one caller act as another.
+  const sessionIdentityMismatch = (
+    session: TrackedSession | undefined,
+    res: Response,
+  ): boolean => {
+    if (!session) return false;
+    const requestIdentity = res.locals.identity as string | undefined;
+    if (session.identity === requestIdentity) return false;
+    sendJsonRpcError(res, 403, -32003, "Forbidden: session belongs to a different identity");
+    return true;
+  };
 
   // Validates the Bearer token on all non-preflight requests.
   // The auth scheme match is case-insensitive for client compatibility.
@@ -276,9 +297,11 @@ export async function startHttpMcpServer(
     sessionId: string,
     transport: HttpTransport,
     kind: TrackedSession["kind"],
+    identity?: string,
   ) => {
     sessions.set(sessionId, {
       activeRequests: 0,
+      identity,
       kind,
       lastActivityAt: Date.now(),
       transport,
@@ -354,6 +377,7 @@ export async function startHttpMcpServer(
       const existing = sessionId ? sessions.get(sessionId) : undefined;
 
       if (existing?.transport instanceof StreamableHTTPServerTransport) {
+        if (sessionIdentityMismatch(existing, res)) return;
         transport = existing.transport;
         endSessionRequest = beginSessionRequest(sessionId!, req.method);
       } else if (!sessionId && req.method === "POST") {
@@ -371,15 +395,17 @@ export async function startHttpMcpServer(
           return;
         }
 
+        const identity = res.locals.identity as string | undefined;
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (sid) => {
             initializedSessionId = sid;
             releaseReservation?.();
             console.error(
-              `[affine-mcp] StreamableHTTP session initialized: ${sid}`,
+              `[affine-mcp] StreamableHTTP session initialized: ${sid}` +
+                (identity ? ` (identity: ${identity})` : ""),
             );
-            registerSession(sid, transport, "streamable");
+            registerSession(sid, transport, "streamable", identity);
             endSessionRequest = beginSessionRequest(sid, req.method);
           },
         });
@@ -393,7 +419,7 @@ export async function startHttpMcpServer(
           }
         };
 
-        const mcpServer = await createMcpServer();
+        const mcpServer = await createMcpServer(identity);
         await mcpServer.connect(transport);
       } else if (sessionId && !existing) {
         sendJsonRpcError(res, 404, -32001, "Session not found");
@@ -456,17 +482,19 @@ export async function startHttpMcpServer(
       // @ts-ignore — intentional: SSEServerTransport retained for backward compat only
       transport = new SSEServerTransport("/messages", res);
       const sessionId = transport.sessionId;
-      registerSession(sessionId, transport, "legacy-sse");
+      const identity = res.locals.identity as string | undefined;
+      registerSession(sessionId, transport, "legacy-sse", identity);
 
       res.on("close", () => {
         console.error(`[affine-mcp] Legacy SSE session closed: ${sessionId}`);
         removeSession(sessionId, transport!);
       });
 
-      const mcpServer = await createMcpServer();
+      const mcpServer = await createMcpServer(identity);
       await mcpServer.connect(transport);
       console.error(
-        `[affine-mcp] Legacy SSE session established: ${sessionId}`,
+        `[affine-mcp] Legacy SSE session established: ${sessionId}` +
+          (identity ? ` (identity: ${identity})` : ""),
       );
     } catch (e) {
       if (transport) {
@@ -502,6 +530,7 @@ export async function startHttpMcpServer(
       }
 
       const session = sessions.get(sessionId);
+      if (sessionIdentityMismatch(session, res)) return;
       if (!(session?.transport instanceof SSEServerTransport)) {
         sendJsonRpcError(
           res,

@@ -85,6 +85,7 @@
     "test:auth-session": "tsx tests/test-auth-session.mjs",
     "test:http-bearer": "node tests/test-http-bearer.mjs",
     "test:http-security": "tsx tests/test-http-security.mjs",
+    "test:http-identities": "tsx tests/test-http-identities.mjs",
     "test:http-runtime": "tsx tests/test-http-runtime-safety.mjs",
     "test:oauth-http": "node tests/test-oauth-http.mjs",
     "test:organize": "node tests/test-organize-tools.mjs",
