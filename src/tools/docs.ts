@@ -8586,45 +8586,50 @@ export function registerDocTools(
     const { endpoint, cookie, bearer } = await getCookieAndEndpoint();
     const wsUrl = wsUrlFromGraphQLEndpoint(endpoint);
     const socket = await connectWorkspaceSocket(wsUrl, cookie, bearer);
-    await joinWorkspace(socket, workspaceId);
+    try {
+      await joinWorkspace(socket, workspaceId);
 
-    const doc = new Y.Doc();
-    const snapshot = await loadDoc(socket, workspaceId, docId);
-    if (!snapshot.missing) {
-      socket.disconnect();
-      throw new Error("Document not found");
-    }
-    Y.applyUpdate(doc, Buffer.from(snapshot.missing, "base64"));
+      const doc = new Y.Doc();
+      const snapshot = await loadDoc(socket, workspaceId, docId);
+      if (!snapshot.missing) {
+        socket.disconnect();
+        throw new Error("Document not found");
+      }
+      Y.applyUpdate(doc, Buffer.from(snapshot.missing, "base64"));
 
-    const prevSV = Y.encodeStateVector(doc);
-    const blocks = doc.getMap("blocks") as Y.Map<any>;
-    const dbBlock = findBlockById(blocks, databaseBlockId);
-    if (!dbBlock) {
-      socket.disconnect();
-      throw new Error(`Database block '${databaseBlockId}' not found`);
-    }
-    const dbFlavour = dbBlock.get("sys:flavour");
-    if (dbFlavour !== "affine:database") {
-      socket.disconnect();
-      throw new Error(`Block '${databaseBlockId}' is not a database (flavour: ${dbFlavour})`);
-    }
+      const prevSV = Y.encodeStateVector(doc);
+      const blocks = doc.getMap("blocks") as Y.Map<any>;
+      const dbBlock = findBlockById(blocks, databaseBlockId);
+      if (!dbBlock) {
+        socket.disconnect();
+        throw new Error(`Database block '${databaseBlockId}' not found`);
+      }
+      const dbFlavour = dbBlock.get("sys:flavour");
+      if (dbFlavour !== "affine:database") {
+        socket.disconnect();
+        throw new Error(`Block '${databaseBlockId}' is not a database (flavour: ${dbFlavour})`);
+      }
 
-    const cellsMap = dbBlock.get("prop:cells") as Y.Map<any>;
-    if (!(cellsMap instanceof Y.Map)) {
-      socket.disconnect();
-      throw new Error("Database block has no cells map");
-    }
+      const cellsMap = dbBlock.get("prop:cells") as Y.Map<any>;
+      if (!(cellsMap instanceof Y.Map)) {
+        socket.disconnect();
+        throw new Error("Database block has no cells map");
+      }
 
-    const lookup = buildDatabaseColumnLookup(readColumnDefs(dbBlock));
-    return {
-      socket,
-      doc,
-      prevSV,
-      blocks,
-      dbBlock,
-      cellsMap,
-      ...lookup,
-    };
+      const lookup = buildDatabaseColumnLookup(readColumnDefs(dbBlock));
+      return {
+        socket,
+        doc,
+        prevSV,
+        blocks,
+        dbBlock,
+        cellsMap,
+        ...lookup,
+      };
+    } catch (err) {
+      socket.disconnect();
+      throw err;
+    }
   }
 
   // ADD DATABASE ROW

@@ -83,7 +83,9 @@ export async function connectWorkspaceSocket(wsUrl: string, cookie?: string, bea
       transports: ['websocket'],
       path: '/socket.io/',
       extraHeaders: Object.keys(extraHeaders).length ? extraHeaders : undefined,
-      autoConnect: true
+      autoConnect: true,
+      // Sockets are per-call; without this an orphaned socket reconnects forever.
+      reconnection: false
     });
     const timeout = setTimeout(() => {
       if (settled) return;
